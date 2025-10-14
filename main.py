@@ -1,12 +1,28 @@
 # main.py
 from fastapi import FastAPI, Query, HTTPException
+from fastapi.responses import RedirectResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import httpx
 import urllib.parse
 import time
 
-app = FastAPI(title="Permit Search Cascade", version="1.0.0")
+app = FastAPI(title="Permit Search Cascade", version="1.0.1")
+
+# Allow browser calls (Agent Mode / web requests)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.get("/")
+def root():
+    # Friendly default
+    return RedirectResponse(url="/docs")
 
 # ---------- Data models ----------
 
@@ -60,19 +76,33 @@ def norm(s: Optional[str]) -> Optional[str]:
 
 class BaseAdapter:
     name: str
+    portal: str
     def search(self, address: str, city: Optional[str], county: Optional[str]) -> List[Permit]:
         raise NotImplementedError
 
-# 1) City of Austin (placeholder). Paste your real Austin search here when ready.
+# 1) City of Austin adapter
+# Replace the body of search() with your working Austin logic when ready.
 class AustinAdapter(BaseAdapter):
     name = "City of Austin (AB+C)"
     portal = "Austin Build + Connect"
+    # NOTE: Update 'ABC_SEARCH_URL' below if you have a direct deep-link for address search.
+    ABC_SEARCH_URL = "https://abc.austintexas.gov/public-search"  # manual entry page
+
     def search(self, address: str, city: Optional[str], county: Optional[str]) -> List[Permit]:
-        # TODO: Replace with your working Austin scraping/call.
-        # Example of a real item once wired:
+        # --- PLACE YOUR REAL AUSTIN LOOKUP HERE ---
+        # Example shape when you wire it:
         # return [Permit(jurisdiction="City of Austin", portal=self.portal, permit_id="PR-2024-12345",
-        #                address=address, type="Building", status="Issued", issued_date="2024-10-01", link="https://...")]
-        return []
+        #                address=address, type="Building", status="Issued",
+        #                issued_date="2024-10-01", link="https://abc.../permit/PR-2024-12345")]
+        #
+        # Until then we return a manual portal link so the Agent can present it.
+        return [
+            Permit(
+                jurisdiction="City of Austin",
+                portal=self.portal,
+                manual_check_url=self.ABC_SEARCH_URL
+            )
+        ]
 
 # 2) Generic manual-link adapter for portals without public API
 class ManualPortalAdapter(BaseAdapter):
@@ -142,6 +172,7 @@ def search_permits(address: str = Query(..., description="Full street address, c
     if not addr_in:
         raise HTTPException(status_code=400, detail="address is required")
 
+    # Resolve city/county (to help with routing and display)
     geo = geocode_nominatim(addr_in)
     city = geo.get("city")
     county = geo.get("county")
@@ -149,6 +180,7 @@ def search_permits(address: str = Query(..., description="Full street address, c
     checked: List[str] = []
     all_hits: List[Permit] = []
 
+    # Try adapters in order; stop early if we find a real permit_id
     for adapter in adapters_for(county, city):
         checked.append(adapter.name)
         try:
@@ -159,6 +191,7 @@ def search_permits(address: str = Query(..., description="Full street address, c
                     break
             time.sleep(0.4)
         except Exception:
+            # Fail open—keep cascading
             continue
 
     return SearchResponse(
@@ -168,4 +201,3 @@ def search_permits(address: str = Query(..., description="Full street address, c
         hits=all_hits,
         checked=checked,
     )
-
